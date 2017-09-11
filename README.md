@@ -21,13 +21,13 @@ PolyArcFitter
 
 使用例
 
-	python arc_fitter.py datafile.tsv -d 0.1 -c 30 -a 100
+	python arc_fitter.py number5.tsv -d 2.0 -c 20 -a 30
 
 により、
-- datafile.tsv  (各行に点の x 座標 と y 座標がタブで区切られたテキストファイル) から点列を読み込み
-- 誤差が 0.1 以内に収まるように
-- 角度が30度以上の頂点は端点として必ず通る
-- 距離が100以上離れた2点は線分で結ぶ
+- number5.tsv  (各行に点の x 座標 と y 座標がタブで区切られたテキストファイル) から点列を読み込み
+- 誤差が 2.0 以内に収まるように
+- 角度が 20度以上の頂点は端点として必ず通る
+- 距離が 30以上離れた2点は線分で結ぶ
 
 という条件のもと補間し、その結果を標準出力に吐き出す。
 
@@ -39,6 +39,6 @@ PolyArcFitter
     
 ただし Angle は X 軸方向を 0 としたラジアン値
 
-	python arc_fitter.py datafile.tsv -d 0.1 -c 30 -a 100
+	python arc_fitter.py number5.tsv -d 2.0 -c 20 -a 30 -v
 
 とすると、matplotlib を使って結果を可視化する。
