@@ -237,9 +237,9 @@ def formated_text(datum,seg_arc_list):
         if seg_arc[0] == 'line':
             _, vs, ve, part_error = seg_arc
             max_error = max(part_error,max_error)
-            is_new_line_segment = False
             if is_new_line_segment:
                 print('{}\t{}'.format(vs[0],vs[1]))
+            is_new_line_segment = False
             print('{}\t{}'.format(ve[0],ve[1]))
         elif seg_arc[0] == 'arc':
             _, o, R, vs, ve, th1, th2, part_error = seg_arc
