@@ -19,6 +19,8 @@ parser.add_argument('--corner_angle', '-c', type=float, default=20.0,
                         help='minimum angle in degrees to be classified as a corner')
 parser.add_argument('--arc_limit', '-a', type=float, default=300,
                         help='points separated more than this value will be connected by a line segment')
+parser.add_argument('--max_radius', '-r', type=float, default=float('inf'),
+                        help='Maximum radius of approximated arcs.')
 parser.add_argument('--visualise', '-v', action='store_true',
                         help='visualise the result using matplotlib')
 parser.add_argument('--show_circle', action='store_true',
@@ -65,6 +67,8 @@ def segment_fit(polyline):
 #近似できる場合はその中心,半径,開始地点、終了地点、開始角、終了角、最大エラーを返す
 def arc_fit(polyline):
     o, R = approximate_arc(polyline)
+    if R > args.max_radius:
+        return None
     max_error = np.max(np.abs(np.sqrt(np.sum((polyline - o)**2,axis=1))-R))
     if max_error>args.deviation_tolerance:
         return None
