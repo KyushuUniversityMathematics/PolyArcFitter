@@ -1,164 +1,269 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Poly-arc fitter
+# by Akira Hirakawa, Chihiro Matsufuji, Yosuke Onitsuka, Shizuo Kaji
+# This work is partially supported by the Kyushu university IMI short term research programme
+# "Evaluation technique for a three-dimensional geometric modeling and software development"
+# held in Sep. 2017
 
 
+from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from scipy.linalg import solve
+#from scipy.linalg import solve
 import argparse
 import sys
 
-# コマンドライン引数解析
+# throughout the code "polyline" means an ordered sequence of 2D points
+
+# least square fit the polyline by an arc
+def least_sq_fit(polyline):
+    X = np.hstack(( polyline, np.ones((len(polyline), 1)) ))
+    Y = np.vstack((X[0], X[-1]))    
+    p = np.sum(polyline**2, axis=1)
+    q = np.array([p[0], p[-1]])    
+    A = np.vstack(( np.hstack((np.dot(X.T, X), Y.T)),
+                    np.hstack((Y, np.zeros((2,2)) )) ))    
+    bb = -np.hstack((np.dot(X.T, p), q))    
+    # with scipy: only upper triangular part is necessary
+    # a, b, c, _, _ = solve(A, bb, overwrite_a=True, overwrite_b=True, assume_a = 'sym')
+    # without scipy
+    a, b, c, _, _ = np.linalg.solve(A, bb)
+    o = -np.array([a, b])/2    # centre
+    R = np.sqrt(a**2/4 + b**2/4 - c)   # radius
+    max_error = np.max(np.abs(np.sqrt(np.sum((polyline - o)**2,axis=1))-R))
+
+    if R > args.max_radius or max_error > args.deviation_tolerance:
+        return None
+    # compute starting and ending angles in degrees
+    ds, de, dm = polyline[0] - o, polyline[-1] - o, polyline[len(polyline)//2] - o
+    # make three points counter-clockwise
+    if np.cross(dm-ds, de-dm) <= 0:
+        ds, de = de, ds
+    th1, th2 = getArgsForCCW(ds,de)
+    return 'arc', o, R, th1, th2, max_error
+
+# middle centre fit the polyline by an arc; counter-clockwise or clockwise
+def middle_centre_fit(polyline):
+    return under_arc_fit_with_max(polyline, polyline[0], polyline[-1])\
+            or under_arc_fit_with_max(polyline, polyline[-1], polyline[0])
+
+
+# dictionary of fitting functions
+arc_fit_function = {
+    'least_sq': least_sq_fit,
+    'middle': middle_centre_fit,
+}
+
+# command line arguments
 parser = argparse.ArgumentParser(description='poly arc fitting of ordered points')
 parser.add_argument('dataset', help='Path to data file')
-parser.add_argument('--deviation_tolerance', '-d', type=float, default=0.1,
-                        help='maximum allowed deviation from the original points')
-parser.add_argument('--corner_angle', '-c', type=float, default=20.0,
-                        help='minimum angle in degrees to be classified as a corner')
 parser.add_argument('--arc_limit', '-a', type=float, default=300,
                         help='points separated more than this value will be connected by a line segment')
+parser.add_argument('--deviation_tolerance', '-d', type=float, default=0.1,
+                        help='maximum allowed deviation (in Eucledian distance) from the original points')
+parser.add_argument('--corner_points', '-cp', default='',
+                        help='Path to a csv file containing indices of corner points')
+parser.add_argument('--corner_angle', '-ca', type=float, default=20.0,
+                        help='angle in degrees greater than this will be classified as a corner')
 parser.add_argument('--max_radius', '-r', type=float, default=float('inf'),
-                        help='Maximum radius of approximated arcs.')
+                        help='Maximum allowed radius of circular arcs.')
 parser.add_argument('--visualise', '-v', action='store_true',
                         help='visualise the result using matplotlib')
 parser.add_argument('--show_circle', action='store_true',
                         help='draw full circles rather than arcs')
+parser.add_argument('--fit', '-f', choices=arc_fit_function.keys(), default='least_sq',
+                        help='fitting method')
+parser.add_argument('--max_ratio', '-mr', type=float, default=10,
+                        help='points with the distance ratio to adjacent points greater than this value will be classified as a corner.')
 args = parser.parse_args()
 
+# cosine of the corner angle
 cos_theta = np.cos(np.pi*args.corner_angle/180)
 
-sys.stderr.write('corner angle: {}, deviation tolerance: {}, arc length limit: {}, dataset: {}\n'.format(args.corner_angle,args.deviation_tolerance,args.arc_limit,args.dataset))
+# print the settings
+sys.stderr.write('method: {}, corner angle: {}, deviation tolerance: {}, arc length limit: {}, max radius: {},  extreme limit: {}, dataset: {}\n'.format(args.fit,args.corner_angle,args.deviation_tolerance,args.arc_limit,args.max_radius,args.max_ratio,args.dataset))
 
 
-# 角(角度が大きい点と隣の点と離れている点)を見つけ、そのインデックスのリストを返す
+# detect corner points, which the final polyarc must pass
 def find_corners(polyline):
-    #角度の大きい点
-    p =polyline[1:,:]-polyline[:-1,:]
+    # find large angles
+    p = polyline[1:,:]-polyline[:-1,:] # tangent vector
     norm_p=np.linalg.norm(p,axis=1)
-    cosine =np.sum(p[:-1]*p[1:],axis=1)/(norm_p[:-1]*norm_p[1:])
-    (angled , )=np.where(cosine < cos_theta)
-    angled = angled +1
-    #離れている点
+    cosine = np.sum(p[:-1]*p[1:],axis=1)/(norm_p[:-1]*norm_p[1:])
+    (angled, )=np.where(cosine < cos_theta)
+    angled = angled +1    # i-th point is between p[i-1] and p[i]
+    # find distant points
     (distant, )=np.where(norm_p > args.arc_limit)
     distant_end = distant + 1
-    #点をまとめてソート
+    # find three consecutive points with a big distant ratio
+    f1 = norm_p[1:]/norm_p[:-1]
+    f2 = norm_p[:-1]/norm_p[1:]
+    ratio = np.max(np.vstack((f1,f2)),axis=0)
+    (extreme,) = np.where(ratio > args.max_ratio)
+    extreme = extreme + 1
+    # first and last points are corners
     corners = [0,len(polyline)-1]
-    corners.extend(angled.tolist()+distant.tolist()+distant_end.tolist())
-    corners = list(set(corners))
+    # user specified corner points
+    if args.corner_points:
+        corners.extend(np.loadtxt(args.corner_points, delimiter=",", dtype=np.int32))
+    # amalgamate all corner points
+    corners.extend(angled.tolist()+distant.tolist()+distant_end.tolist()+extreme.tolist())
+    corners = list(set(corners)) # remove dup
     corners.sort()
     sys.stderr.write('Number of corners: {}\n'.format(len(corners)))
     return corners
 
-#polylineを一つの線分で近似できるか判定し、できる場合は開始地点、終了地点、最大エラーを返す
+# returns the line connecting the first and the last points on the polyline
+# if the maximum Eucledian distance between the points on the polyline and the line is below the tolerance
+# TODO: compute the distance with the line "segment" rather than the line
 def segment_fit(polyline):
-    vs = polyline[0]
-    ve = polyline[-1]
-    d = ve - vs
-    d = d / np.linalg.norm(d)
-    max_error = np.max(np.abs(np.cross(d, polyline - vs)))
-    if  max_error < args.deviation_tolerance:
-        return 'line', vs, ve, max_error
-    else:
-        return None
+    vs, ve = polyline[0], polyline[-1]
+    max_error = np.max(np.abs(np.cross((ve-vs)/np.linalg.norm(ve-vs), polyline - vs)))
+    return ('line', vs, ve, max_error) if max_error < args.deviation_tolerance else None
 
-#polylineを一つの円弧で近似できるか判定し、
-#近似できる場合はその中心,半径,開始地点、終了地点、開始角、終了角、最大エラーを返す
-def arc_fit(polyline):
-    o, R = approximate_arc(polyline)
-    if R > args.max_radius:
+# sub-routine for under_arc_fit_with_max
+# determine the allowed interval for t
+# more precisely, solution to abs( sqrt(x**2 + (y-t)**2) - sqrt(d**2 + t**2) ) = e
+def get_boundary(x, y, d, e):
+    a = e*np.sqrt((d**2 - e**2 + x**2 + y**2)**2 - (2*d*x)**2)
+    b = y*(d**2 + e**2 - x**2 - y**2)
+    c = 2*(e-y)*(e+y)
+    return (a+b)/c, (-a+b)/c
+
+# check if polyline can be approximated by an arc connecting vs and ve counter-clockwisely    
+def under_arc_fit_with_max(polyline, vs, ve, eps=1e-10):
+    # set coordinates so that vs -> (-d,0), ve ->(d,0)
+    d = np.linalg.norm(ve-vs)/2
+    e = args.deviation_tolerance
+    lo = (vs+ve)/2
+    # axis vectors
+    x_axis = (ve-vs)/np.linalg.norm(ve-vs)
+    y_axis = np.array([-x_axis[1], x_axis[0]])
+    # fail if radius is too big
+    if d > args.max_radius:
         return None
+    
+    # range of the centre location (0,t) to meet the max_radius requirement
+    limit = np.sqrt(args.max_radius**2 - d**2)
+    low, high = -limit, limit
+    
+    # consider only those points that are farther from end points than tolerance (*)
+    poly_t = polyline[(np.linalg.norm(polyline-vs, axis=1) > e) & (np.linalg.norm(polyline-ve, axis=1) > e)]
+    poly_t -= lo    
+    # coordinate transform for points
+    x = np.dot(poly_t, x_axis)
+    y = np.dot(poly_t, y_axis)
+    
+    # there are two arcs connecting the end points; one goes above x-axix, the other under it.
+    # here we consider only the latter.
+    if np.any(y >= e-eps):
+        return None
+    
+    # find indices of points which lie between x=-d and x=d (inner) and outside the range (outer)
+    inner_ind = np.abs(x) < d
+    outer_ind = np.abs(x) >= d
+
+    # find indices of points which is close to x-axis (close)
+    close_ind = np.abs(y) <= e - eps
+
+    # for inner-close points, the range of t is [t1,inf]
+    close_inner = close_ind & inner_ind
+    if np.any(close_inner):
+        t1, _ = get_boundary(x[close_inner], y[close_inner], d, e)  # always t1>t2
+        low = max(low, np.max(t1))
+    
+    # for outer-close points, the range of t is [-inf,t2]
+    close_outer = close_ind & outer_ind
+    if np.any(close_outer):
+        _, t2 = get_boundary(x[close_outer], y[close_outer], d, e)  # always t1>t2
+        high = min(high, np.min(t2))
+    
+    # note that due to (*), we only have above two cases for close points
+
+
+    under_fit = np.abs(y+e) < eps
+    
+    # when a point's neighbour touches x-axis, the equation degenerates to a linear one. Handle this case.
+    under_inner = under_fit & inner_ind    
+    if np.any(under_inner):
+        x_masked = x[under_inner]
+        low = max(low, np.max(((d**2 - x_masked**2)**2 - (2*d*e)**2)/(4*e*(d**2 - x_masked**2))))
+
+    under_outer = under_fit & outer_ind
+    if np.any(under_outer):
+        x_masked = x[under_outer]
+        high = min(high, np.min(((d**2 - x_masked**2)**2 - (2*d*e)**2)/(4*e*(d**2 - x_masked**2))))
+    
+    # the "usual case" when points are below x-axis
+    far_ind = (y <= -e-eps)
+    if np.any(far_ind):
+        t1, t2 = get_boundary(x[far_ind], y[far_ind], d, e)
+        low = max(low, np.max(t1))
+        high = min(high, np.min(t2))  
+    
+    # fail if the range is empty
+    if low > high:
+        return None
+    
+    t = (low+high)/2
+    o = lo + t*y_axis
+    R = np.linalg.norm(o-vs)
+    
     max_error = np.max(np.abs(np.sqrt(np.sum((polyline - o)**2,axis=1))-R))
     if max_error>args.deviation_tolerance:
         return None
-    # starting and ending angles in degrees
-    ds, de, dm = polyline[0] - o, polyline[-1] - o, polyline[len(polyline)//2] - o
-    th1, th2 = getArgsSet(ds,de,dm)
-    return 'arc', o, R, polyline[0], polyline[-1], th1, th2, max_error
 
-#polylineを近似する円弧の中心、半径を返す
-def approximate_arc(polyline):
-    n = len(polyline)
-    xs, ys = polyline[0]
-    xe, ye = polyline[-1]
-    x_sum,y_sum= np.sum(polyline,axis=0)
-    xx_sum,yy_sum =np.sum(polyline**2,axis=0)
-    xy_sum = np.sum(np.prod(polyline,axis=1))
-    xxx_sum,yyy_sum =np.sum(polyline**3,axis=0)
-    xxy_sum=np.sum((polyline**2)[:,0]*polyline[:,1],axis=0)
-    xyy_sum=np.sum(polyline[:,0]*(polyline**2)[:,1],axis=0)
+    th1, th2 = getArgsForCCW(vs-o, ve-o)
     
-    # only upper triangular part is necessary
-    A = np.array([[2*xx_sum, 2*xy_sum, 2*x_sum, xs, xe],
-                  [2*xy_sum, 2*yy_sum, 2*y_sum, ys, ye],
-                  [2*x_sum, 2*y_sum, 2*n, 1, 1],
-                  [xs, ys, 1, 0, 0],
-                  [xe, ye, 1, 0, 0]])
-    
-    bb = np.array([-2 * (xxx_sum + xyy_sum),
-                  -2 * (xxy_sum + yyy_sum),
-                  -2 * (xx_sum + yy_sum),
-                  -(xs ** 2 + ys ** 2),
-                  -(xe ** 2 + ye ** 2)])
-    
-    # 対称行列なので scipy の方が早いけれど
-    #sol = solve(A, bb, overwrite_a=True, overwrite_b=True, assume_a = 'sym')
-    # scipy 使いたくなければ、上の代わりに下を
-    sol = np.linalg.solve(A, bb)
-    
-    a, b, c, _, _ = sol
-    
-    return np.array([-a/2, -b/2]), np.sqrt(a**2/4 + b**2/4 - c)
+    return 'arc', o, R, th1, th2, max_error
 
-# polyline を、エラーが deviation_tolerance に収まるように、適宜分割しつつ円弧・線分補間 
-def segments_arcs_fit(polyline, seg_arc_list):
+# angles for the counter-clockwise arc connecting ds de: note th1<=th2
+def getArgsForCCW(ds, de):
+    th1 = np.arctan2(ds[1], ds[0])
+    th2 = np.arctan2(de[1], de[0])
+    th2 += np.ceil((th1 - th2)/(2*np.pi))*2*np.pi
+    if th2 >= 2*np.pi:
+        th1 -= 2*np.pi
+        th2 -= 2*np.pi
+    return th1, th2 
+
+# main loop to divide and approximater polyline
+def segments_arcs_fit(polyline):
+    seg_arc_list = []
     while True:
         end, seg_arc = binary_search(polyline)
         seg_arc_list.append(seg_arc)
         if end >= len(polyline)-1:
-            break
+            return seg_arc_list
         polyline = polyline[end:]
 
-# 分割点を二分探索
+# find knots by binary search
 def binary_search(polyline):
     high = len(polyline)
     low = 2
     cur = high
     seg_arc = 'line', polyline[0], polyline[1], 0.0
     while True:
-        try_seg_arc = segment_fit(polyline[:cur])
-        if try_seg_arc:  # try line segment first
+        try_seg_arc = np.any(polyline[0] != polyline[-1]) and \
+            (segment_fit(polyline[:cur]) or arc_fit_function[args.fit](polyline[:cur]))
+        if try_seg_arc:
             low = cur
             seg_arc = try_seg_arc
         else:
-            try_seg_arc = arc_fit(polyline[:cur])
-            if try_seg_arc:
-                low = cur
-                seg_arc = try_seg_arc
-            else:
-                high = cur
+            high = cur
         cur = (low + high + 1) // 2
         if high-low <= 1:
-            #print("OK",try_seg_arc[0], cur, low, high)
             return low-1, seg_arc
 
-# datum を poly-arc で近似して、arc のリストを返す
-def polyarc_fit(datum):
-    corners = find_corners(datum)
-    seg_arc_list = []
-    for i in range(len(corners)-1):
-        #print("corner: ",corners[i],corners[i+1])
-        segments_arcs_fit(datum[corners[i]:corners[i+1]+1], seg_arc_list)    
-    return seg_arc_list
-
-# 表示
+# draw the result
 def draw(datum,seg_arc_list):
     # draw original points
     plt.plot(datum[:, 0], datum[:, 1], 'x', alpha=0.3, c='b')
     #plt.plot(datum[0,0],datum[0,1], '>', alpha=0.5, c='r')
     #plt.plot(datum[-1,0],datum[-1,1], '<', alpha=0.5, c='r')
-    # draw the simplified poly curve    
+    # draw the polyarc   
     ax = plt.axes()
     max_error = 0
     num_lines = 0
@@ -172,17 +277,16 @@ def draw(datum,seg_arc_list):
             plt.plot([vs[0],ve[0]], [vs[1],ve[1]], alpha=0.5, c='g')
         elif seg_arc[0] == 'arc':
             num_arcs += 1
-            _, o, R, vs, ve, th1, th2, part_error = seg_arc
+            _, o, R, th1, th2, part_error = seg_arc
             max_error = max(part_error,max_error)
-            # draw circle and arc
-            circ = patches.Circle(xy=o, radius=R, ec='y', fill=False, alpha=0.5)
-            if th2>th1:
-                arc = patches.Arc(xy=o, width=2*R, height=2*R, ec='r', theta1=th1*180/np.pi, theta2=th2*180/np.pi)
-            else:
-                arc = patches.Arc(xy=o, width=2*R, height=2*R, ec='r', theta1=th2*180/np.pi, theta2=th1*180/np.pi)
+            # draw an arc
+            arc = patches.Arc(xy=o, width=2*R, height=2*R, ec='r', theta1=th1*180/np.pi, theta2=th2*180/np.pi)
             ax.add_patch(arc)
             if args.show_circle:
+                circ = patches.Circle(xy=o, radius=R, ec='y', fill=False, alpha=0.5)
                 ax.add_patch(circ)
+            vs = o + np.array([R*np.cos(th1),R*np.sin(th1)])
+            ve = o + np.array([R*np.cos(th2),R*np.sin(th2)])
         # draw the start-end points
         plt.plot(vs[0], vs[1], 'v', alpha=0.5, c='k')
         plt.plot(ve[0], ve[1], '^', alpha=0.5, c='k')
@@ -192,71 +296,30 @@ def draw(datum,seg_arc_list):
     plt.axes().set_aspect('equal', 'datalim')    
     plt.show()
 
-## 角度の関係
-#(x,y):対象とするベクトルが (vx,vy):基準とするベクトルの右手にあるか
-def isPointRightHand(x, y, vx, vy):
-    return(vy*x - vx*y > 0)
 
-#弧の向きが時計回りか判定
-#vs:始点 ve:終点 vm:中継点
-def isCircleClockwise(ds,de,dm):
-    if isPointRightHand(de[0], de[1], ds[0], ds[1]):
-        return (isPointRightHand(dm[0], dm[1], ds[0], ds[1]) and isPointRightHand(de[0], de[1], dm[0], dm[1]))
-    else:
-        return (isPointRightHand(dm[0], dm[1], ds[0], ds[1]) or isPointRightHand(de[0], de[1], dm[0], dm[1]))
-
-#弧の向きを加味した始点と終点のラジアン角を返す
-#vs:始点 ve:終点 vm:中継点
-def getArgsSet(ds,de,dm):
-    vs_arg = np.arctan2(ds[1], ds[0])
-    ve_arg = np.arctan2(de[1], de[0])
-    vm_arg = np.arctan2(dm[1], dm[0])
-    
-    if isCircleClockwise(ds,de,dm):
-        if isPointRightHand(dm[0], dm[1], ds[0], ds[1]):
-            if vs_arg < 0 and ve_arg > 0:
-                vs_arg += 2*np.pi
-        else:
-            if vs_arg < 0:
-                vs_arg += 2*np.pi
-            elif ve_arg > 0:
-                ve_arg -= 2*np.pi
-    else:
-        if isPointRightHand(de[0], de[1], ds[0], ds[1]):
-            if ve_arg < 0:
-                ve_arg += 2*np.pi
-            elif vs_arg > 0:
-                vs_arg -= 2*np.pi
-        else:
-            if vs_arg > 0 and ve_arg < 0:
-                ve_arg += 2*np.pi
-    return (vs_arg, ve_arg)
-
-
-# フォーマット済みテキストを出力
+# format output
 def formated_text(datum,seg_arc_list):
     max_error = 0
     is_new_line_segment = True
     for seg_arc in seg_arc_list:
         if seg_arc[0] == 'line':
             _, vs, ve, part_error = seg_arc
-            max_error = max(part_error,max_error)
             if is_new_line_segment:
                 print('{}\t{}'.format(vs[0],vs[1]))
             is_new_line_segment = False
             print('{}\t{}'.format(ve[0],ve[1]))
         elif seg_arc[0] == 'arc':
-            _, o, R, vs, ve, th1, th2, part_error = seg_arc
-            max_error = max(part_error,max_error)
+            _, o, R, th1, th2, part_error = seg_arc
             is_new_line_segment = True
             print('{}\t{}\t{}\t{}\t{}'.format(R,o[0],o[1],th1,th2))
+        max_error = max(part_error,max_error)
     sys.stderr.write('Maximum deviation: {}\n'.format(max_error))
 
-##
+## start here
 if __name__ == '__main__':
     datum = np.loadtxt(args.dataset, delimiter='\t')
-    seg_arc_list = polyarc_fit(datum)
-
+    corners = find_corners(datum)
+    seg_arc_list = [item for i in range(len(corners)-1) for item in segments_arcs_fit(datum[corners[i]:corners[i+1]+1])]
     if args.visualise:
         draw(datum,seg_arc_list)
     else:
