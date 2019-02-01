@@ -5,7 +5,7 @@ PolyArcFitter
 
 - main authors:  Akira Hirakawa, Chihiro Matsufuji, Yosuke Onitsuka, Shizuo Kaji
 - Thanks: 2017年度九州大学IMI短期共同研究
-[「三次元幾何モデリング評価手法の提案とソフトウェア開発」](http://www.imi.kyushu-u.ac.jp/events/view/2147) にて開発された
+[「三次元幾何モデリング評価手法の提案とソフトウェア開発」](https://www.imi.kyushu-u.ac.jp/joint_research/detail/20170011) にて開発された
 
 # 必要ライブラリ
 - python 3
